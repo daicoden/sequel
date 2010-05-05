@@ -21,11 +21,6 @@ describe "Sequel::Plugins::ProcErrorHandling" do
           [:foos] => [:id, :value, :unique, :required]
         }[opts[:from] + (opts[:join] || []).map { |x| x.table }]
       end
-
-      def ds.insert(*args)
-        db << insert_sql(*args)
-        1
-      end
       ds
     end
 
@@ -35,6 +30,21 @@ describe "Sequel::Plugins::ProcErrorHandling" do
         errors.add(:unique, "must be unique.") if 
           self.class.first("unique = ?",unique)
       end
+
+      def to_hash
+        {
+          id:       id,
+          value:    value,
+          unique:   unique,
+          required: required
+        }
+      end
+
+      def self.new_from_sql(params)
+        model = self.new
+        params.each { |k,v| model.send("#{k}=",v) }
+        model
+      end
     end
     @c = ::Foo
     @c.plugin :proc_error_handling
@@ -42,12 +52,57 @@ describe "Sequel::Plugins::ProcErrorHandling" do
     def valid_attributes(klass)
       {
         value:    'value', 
-        unique:   "unique#{klass.count}",
+        unique:   "unique",#{klass.count}",
         required: 'required'
       }
     end
     @ds = Foo.dataset
     @db.reset
+
+    def @ds.fetch_rows(sql)
+      @db.execute(sql)
+
+      results = if sql =~ /SELECT \* FROM foos/ 
+        s = sql
+        while s =~ /SELECT \* FROM foos WHERE (\(.*?\))/
+          s = $1
+        end
+
+        if s != "SELECT * FROM foos"
+          conditions =  s.gsub(/\(|\)/,'').split(/ AND /)
+          conditions.map do |condition|
+            @foos.find_from_condition(*condition.split(/ = /))
+          end.flatten.uniq
+        else
+          @foos
+        end
+      end
+
+      return if !results or results.empty?
+      
+      results.each { |r| yield(r.to_hash) unless r.nil? }
+    end
+
+    def @ds.insert(*args)
+      @foos << Foo.new_from_sql(*args)
+      @db.execute insert_sql(*args)
+    end
+
+    @ds.instance_eval do
+      @foos = []
+      @foos.instance_eval do
+        def find_from_condition(prop,value)
+          self.map do |foo|
+            foo if foo.send(prop.to_sym).to_s == value.gsub("'",'')
+          end.flatten
+        end
+      end
+
+      def disect_sql(sql)
+        sql.scan(/\(.*\)/)
+        p sql.scan(/(\(.*\))?/)
+      end
+    end
   end
 
   after(:each) do
@@ -64,14 +119,18 @@ describe "Sequel::Plugins::ProcErrorHandling" do
   end
 
   it "should function normaly for #create" do
-    p @ds
     attrs = valid_attributes(@c)
     @c.create(attrs).should be_an_instance_of(@c)
-    p ::Foo.first.required
 
     bad_attrs = valid_attributes(@c).dup
+    lambda { @c.create(bad_attrs) }.should raise_error Sequel::ValidationFailed
+    bad_attrs[:unique] = "new_unique"
+    @c.create(bad_attrs).should be_an_instance_of(@c)
+
+    bad_attrs[:unique] = "new_unique2"
     bad_attrs.delete(:required)
-    lambda { @c.create(bad_attrs) }.should raise_error
+    lambda { @c.create(bad_attrs) }.should raise_error Sequel::ValidationFailed
+
   end
 
 end
