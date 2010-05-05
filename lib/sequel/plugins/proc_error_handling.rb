@@ -16,8 +16,14 @@ module Sequel
       end
 
       module ClassMethods
-        def create(values = {}, &block)
+        def create(values = {}, error_proc = nil, &block)
           orig_create(values,&block)
+        rescue 
+          raise $! unless error_proc
+          result = error_proc.call(self.class,values) 
+          raise $! if result == :raise or !result
+          retry if result == :retry
+          result
         end
       end
 
