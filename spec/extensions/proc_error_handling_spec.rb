@@ -30,79 +30,20 @@ describe "Sequel::Plugins::ProcErrorHandling" do
         errors.add(:unique, "must be unique.") if 
           self.class.first("unique = ?",unique)
       end
-
-      def to_hash
-        {
-          id:       id,
-          value:    value,
-          unique:   unique,
-          required: required
-        }
-      end
-
-      def self.new_from_sql(params)
-        model = self.new
-        params.each { |k,v| model.send("#{k}=",v) }
-        model
-      end
     end
     @c = ::Foo
     @c.plugin :proc_error_handling
 
-    def valid_attributes(klass)
+    def valid_attributes
       {
         value:    'value', 
-        unique:   "unique",#{klass.count}",
+        unique:   "unique#{Foo.count}",
         required: 'required'
       }
     end
     @ds = Foo.dataset
     @db.reset
 
-    def @ds.fetch_rows(sql)
-      @db.execute(sql)
-
-      results = if sql =~ /SELECT \* FROM foos/ 
-        s = sql
-        while s =~ /SELECT \* FROM foos WHERE (\(.*?\))/
-          s = $1
-        end
-
-        if s != "SELECT * FROM foos"
-          conditions =  s.gsub(/\(|\)/,'').split(/ AND /)
-          conditions.map do |condition|
-            @foos.find_from_condition(*condition.split(/ = /))
-          end.flatten.uniq
-        else
-          @foos
-        end
-      end
-
-      return if !results or results.empty?
-      
-      results.each { |r| yield(r.to_hash) unless r.nil? }
-    end
-
-    def @ds.insert(*args)
-      @foos << Foo.new_from_sql(*args)
-      @db.execute insert_sql(*args)
-    end
-
-    @ds.instance_eval do
-      @foos = []
-      @foos.instance_eval do
-        def find_from_condition(prop,value)
-          self.map do |foo|
-            foo if foo.send(prop.to_sym).to_s == value.gsub("'",'')
-          end.flatten
-        end
-      end
-
-      def disect_sql(sql)
-        sql.scan(/\(.*\)/)
-        p sql.scan(/(\(.*\))?/)
-      end
-    end
   end
 
   after(:each) do
@@ -119,17 +60,66 @@ describe "Sequel::Plugins::ProcErrorHandling" do
   end
 
   it "should function normaly for #create" do
-    attrs = valid_attributes(@c)
+
+    def @ds.fetch_rows(sql)
+      return if sql == "SELECT * FROM foos WHERE (unique = 'unique0') LIMIT 1"
+      yield({:count => 0}) and return if sql == "SELECT COUNT(*) AS count FROM foos LIMIT 1"
+      yield({:id => 1})
+    end
+
+    attrs = valid_attributes
     @c.create(attrs).should be_an_instance_of(@c)
+    @db.sqls.should == ["INSERT INTO foos (value, unique, required) VALUES ('value', 'unique0', 'required')"]
 
-    bad_attrs = valid_attributes(@c).dup
+
+   def @ds.fetch_rows(sql)
+     case sql
+     when "SELECT * FROM foos WHERE (unique = 'unique0') LIMIT 1"
+       yield({:id => 1}) 
+     when "SELECT COUNT(*) AS count FROM foos LIMIT 1"
+       yield({:count => 1}) 
+     when "INSERT INTO foos (value, unique, required) VALUES ('value', 'unique1', 'required')"
+      yield({:id => 2}) 
+     when "SELECT * FROM foos WHERE (unique = 'unique1') LIMIT 1"
+     else
+       yield({:id => 2})
+     end
+    end
+
+    # Unique Failure
+    bad_attrs = attrs.dup
     lambda { @c.create(bad_attrs) }.should raise_error Sequel::ValidationFailed
-    bad_attrs[:unique] = "new_unique"
-    @c.create(bad_attrs).should be_an_instance_of(@c)
+    attrs = valid_attributes
+    @c.create(attrs).should be_an_instance_of(@c)
+    @db.sqls.last.should == "INSERT INTO foos (value, unique, required) VALUES ('value', 'unique1', 'required')"
 
-    bad_attrs[:unique] = "new_unique2"
+    #Required Failure
+    bad_attrs = valid_attributes
     bad_attrs.delete(:required)
     lambda { @c.create(bad_attrs) }.should raise_error Sequel::ValidationFailed
+
+  end
+
+  it "should handle the errors for #create if proc given" do
+    unique_handle = proc do |klass,values| 
+      if $!.message =~ /must be unique./ 
+        klass.first("unique = ?", values[:unique])
+      end
+    end
+
+   def @ds.fetch_rows(sql)
+     case sql
+     when "SELECT * FROM foos WHERE (unique = 'unique0') LIMIT 1"
+       yield({:id => 1}) 
+     when "SELECT COUNT(*) AS count FROM foos LIMIT 1"
+      yield({:count => 0}) 
+     end
+   end
+
+   # Bad attrs because DB is returning a unique model
+   bad_attrs = valid_attributes
+   lambda { @c.create(bad_attrs) }.should raise_error Sequel::ValidationFailed
+   @c.create(bad_attrs,unique_handle).should be_an_instance_of(@c)
 
   end
 
