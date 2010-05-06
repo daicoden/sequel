@@ -149,6 +149,7 @@ describe "Sequel::Plugins::ProcErrorHandling" do
       attrs = valid_attributes
       @c.create(attrs).should be_an_instance_of(@c)
       @db.sqls.last.should eql INSERT_VALID_ATTRS0 
+      @db.reset
 
       #mock of dataset with 1 record of id 1
       define_one_record_dataset(@ds)
@@ -159,10 +160,15 @@ describe "Sequel::Plugins::ProcErrorHandling" do
       attrs = valid_attributes
       @c.create(attrs).should be_an_instance_of(@c)
       @db.sqls.last.should eql INSERT_VALID_ATTRS1
+      @db.reset
 
       #Required Failure
       bad_attrs = valid_attributes.delete_if { |k,v| k == :required }
       lambda{ @c.create(bad_attrs.dup) }.should raise_error Sequel::ValidationFailed
+      @db.reset
+
+      @c.create(bad_attrs.dup) { |m| m.required = 'required' }
+      @db.sqls.last.should eql INSERT_VALID_ATTRS1
     end
 
     it "should return result of the error proc" do
