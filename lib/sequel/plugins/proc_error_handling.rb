@@ -32,12 +32,8 @@ module Sequel
           peh_orig_create(values,&block)
         rescue 
           raise $! unless error_proc
-          error_proc = [error_proc] unless error_proc.is_a? Array
-          result = error_proc.each do |ep|
-            val = ep.call(self,values) 
-            break val if val            
-          end
-          raise $! if result == :raise or !result
+          result = PEH.send(:process_error_proc,error_proc,self,values)
+          raise $! if result == :raise or result.nil?
           retry if result == :retry
           result
         end
@@ -45,6 +41,18 @@ module Sequel
 
       module DatasetMethods
       end
+
+      def self.process_error_proc(procs,*proc_vals)
+        procs = [procs] unless procs.is_a? Array
+        result = procs.each do |ep|
+          val = ep.call(*proc_vals) 
+          break val unless val.nil? 
+        end
+        # if result is the original array then error handling failed
+        (result == procs) ? nil : result
+      end
+
+      private_class_method :process_error_proc
     end
 
     PEH = ProcErrorHandling
