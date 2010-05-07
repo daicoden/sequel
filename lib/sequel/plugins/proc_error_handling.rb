@@ -89,10 +89,28 @@ module Sequel
 
       module ClassMethods
         def create(values = {}, error_proc = nil, &block)
-          new(values, &block).save
-          peh_orig_create(values,&block)
+          # Because we need to catch where the error occured we need
+          # to split this up into 3 parts.
+          # in the future we could just modify initialize to take
+          # error handling blocks and have that handel the errors instead
+          # of create.
+          #
+          # We can't do this now because initilize can not return
+          # anything else besides an instance of the object.  Create
+          # on the other hand is currently speced to return the result
+          # of the error proc.  I am leaning twoards not allowing this
+          # and saying you eithir have to return :raise, :retry, or nil
+          # This would enforce the methodology of providing error
+          # handling with the purpose of massaging the bad input
+          # into acceptable input
+          model = nil
+          model = new(values,&block)
+          model.save
         rescue 
-          result = PEH.send(:process_error_proc, error_proc, self, values)
+          result = PEH.send(:process_error_proc, 
+                            error_proc, 
+                            model || self.new, 
+                            values)
           retry if result == :retry
           result
         end
@@ -115,12 +133,7 @@ module Sequel
         result = (result == procs) ? nil : result
 
         if result == :raise or result.nil?
-          # Try to get model into the closest state as possible
-          if obj.is_a? Class
-            obj = klass.new
-            obj.update(hash,procs) rescue ''
-          end
-            klass.peh_error_occured(obj)
+          klass.peh_error_occured(obj)
           raise $!
         end
         result
