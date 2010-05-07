@@ -223,6 +223,49 @@ describe "Sequel::Plugins::ProcErrorHandling" do
         should raise_error Sequel::ValidationFailed
     end
 
+    it "should execute specified block on error" do
+      error_model = nil
+      @c.on_error{ |m| @error_model = m}
+
+      define_one_record_dataset(@ds)
+      bad_attrs = valid_attributes.merge :unique => 'unique0'
+
+      args = [ bad_attrs.dup, *@peh_args ]
+      lambda{
+        @peh_base.send(@peh_method,*args)
+      }.should raise_error Sequel::ValidationFailed
+
+      @error_model.should be_an_instance_of(@c)
+    end
+
+    it "should run the error block of a superclass if no block given" do
+      begin
+        class ::Bar < Foo
+          def validate
+            errors.add(:unique, "must be unique.") if 
+              self.class.first("unique = ?",unique)
+          end
+        end
+        Bar.plugin :proc_error_handling
+
+        Foo.on_error{ |m| @error_model = m}
+
+        @peh_base = (@peh_base == @c) ? Bar : Bar.new
+
+        define_one_record_dataset(@ds)
+        bad_attrs = valid_attributes.merge :unique => 'unique0'
+
+        args = [ bad_attrs.dup, *@peh_args ]
+        lambda{
+          @peh_base.send(@peh_method,*args)
+        }.should raise_error Sequel::ValidationFailed
+
+        @error_model.should be_an_instance_of(Bar)
+      ensure
+        Object.send(:remove_const, :Bar)
+      end
+    end
+
   end
 
   describe "(#create)" do

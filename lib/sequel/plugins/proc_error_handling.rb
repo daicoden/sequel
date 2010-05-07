@@ -22,6 +22,22 @@ module Sequel
 
           class << self
             alias peh_orig_create create
+
+            def on_error(&block)
+              @error_block = block
+            end
+
+            def peh_error_occured(model)
+              if @error_block
+                @error_block.call(model)
+              elsif superclass.respond_to? :peh_error_occured
+                superclass.peh_error_occured(model)
+              end
+            end
+
+            def get_block
+              @error_block
+            end
           end
         end
       end
@@ -34,7 +50,10 @@ module Sequel
           peh_orig_update(hash)
         rescue
           result = PEH.send(:process_error_proc,error_proc,self.class,hash)
-          raise $! if result == :raise or result.nil?
+          if result == :raise or result.nil?
+            self.class.peh_error_occured(self)
+            raise $! 
+          end
           retry if result == :retry
           result
         end
@@ -43,7 +62,10 @@ module Sequel
           peh_orig_update_all(hash)
          rescue
           result = PEH.send(:process_error_proc,error_proc,self.class,hash)
-          raise $! if result == :raise or result.nil?
+          if result == :raise or result.nil?
+            self.class.peh_error_occured(self)
+            raise $!
+          end
           retry if result == :retry
           result
         end
@@ -56,7 +78,10 @@ module Sequel
           peh_orig_update_except(hash,*except)
         rescue
           result = PEH.send(:process_error_proc,error_proc,self.class,hash)
-          raise $! if result == :raise or result.nil?
+          if result == :raise or result.nil?
+            self.class.peh_error_occured(self)
+            raise $!
+          end
           retry if result == :retry
           result
         end
@@ -68,7 +93,10 @@ module Sequel
           peh_orig_update_only(hash,*only)
         rescue
           result = PEH.send(:process_error_proc,error_proc,self.class,hash)
-          raise $! if result == :raise or result.nil?
+          if result == :raise or result.nil?
+            self.class.peh_error_occured(self)
+            raise $!
+          end
           retry if result == :retry
           result
         end
@@ -80,7 +108,10 @@ module Sequel
           peh_orig_create(values,&block)
         rescue 
           result = PEH.send(:process_error_proc,error_proc,self,values)
-          raise $! if result == :raise or result.nil?
+          if result == :raise or result.nil?
+            self.peh_error_occured(self.new(values))
+            raise $!
+          end
           retry if result == :retry
           result
         end
