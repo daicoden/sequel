@@ -159,9 +159,8 @@ describe "Sequel::Plugins::ProcErrorHandling" do
 
       bad_attrs = valid_attributes.delete_if { |k,v| k == :required }
       args = [ bad_attrs.dup, *@peh_args ]
-      lambda{ @peh_base.send(@peh_method, *args,unique_handle) }.should(
-        raise_error Sequel::ValidationFailed
-      )
+      lambda{@peh_base.send(@peh_method, *args,unique_handle) }.
+        should raise_error Sequel::ValidationFailed
     end
 
     it "should retry DB transaction if specified by block" do

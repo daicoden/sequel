@@ -49,11 +49,7 @@ module Sequel
         def update(hash,error_proc = nil)
           peh_orig_update(hash)
         rescue
-          result = PEH.send(:process_error_proc,error_proc,self.class,hash)
-          if result == :raise or result.nil?
-            self.class.peh_error_occured(self)
-            raise $! 
-          end
+          result = PEH.send(:process_error_proc,error_proc,self,hash)
           retry if result == :retry
           result
         end
@@ -61,11 +57,7 @@ module Sequel
         def update_all(hash, error_proc = nil)
           peh_orig_update_all(hash)
          rescue
-          result = PEH.send(:process_error_proc,error_proc,self.class,hash)
-          if result == :raise or result.nil?
-            self.class.peh_error_occured(self)
-            raise $!
-          end
+          result = PEH.send(:process_error_proc,error_proc,self,hash)
           retry if result == :retry
           result
         end
@@ -77,11 +69,7 @@ module Sequel
 
           peh_orig_update_except(hash,*except)
         rescue
-          result = PEH.send(:process_error_proc,error_proc,self.class,hash)
-          if result == :raise or result.nil?
-            self.class.peh_error_occured(self)
-            raise $!
-          end
+          result = PEH.send(:process_error_proc,error_proc,self,hash)
           retry if result == :retry
           result
         end
@@ -92,11 +80,7 @@ module Sequel
             only.last.is_a? Array
           peh_orig_update_only(hash,*only)
         rescue
-          result = PEH.send(:process_error_proc,error_proc,self.class,hash)
-          if result == :raise or result.nil?
-            self.class.peh_error_occured(self)
-            raise $!
-          end
+          result = PEH.send(:process_error_proc,error_proc,self,hash)
           retry if result == :retry
           result
         end
@@ -105,13 +89,10 @@ module Sequel
 
       module ClassMethods
         def create(values = {}, error_proc = nil, &block)
+          new(values, &block).save
           peh_orig_create(values,&block)
         rescue 
-          result = PEH.send(:process_error_proc,error_proc,self,values)
-          if result == :raise or result.nil?
-            self.peh_error_occured(self.new(values))
-            raise $!
-          end
+          result = PEH.send(:process_error_proc, error_proc, self, values)
           retry if result == :retry
           result
         end
@@ -120,15 +101,29 @@ module Sequel
       module DatasetMethods
       end
 
-      def self.process_error_proc(procs,*proc_vals)
-        return nil unless procs
-        procs = [procs] unless procs.is_a? Array
+      def self.process_error_proc(procs,obj,hash)
+        klass = (obj.is_a? Class) ? obj : obj.class
+        # if procs is nil then compact array and result will be nil
+        # if procs is single proc wrap in array so code runs normaly
+        # if procs is array execute each one till value returned
+        procs = [procs].compact unless procs.is_a? Array
         result = procs.each do |ep|
-          val = ep.call(*proc_vals) 
+          val = ep.call(klass,hash) 
           break val unless val.nil? 
         end
         # if result is the original array then error handling failed
-        (result == procs) ? nil : result
+        result = (result == procs) ? nil : result
+
+        if result == :raise or result.nil?
+          # Try to get model into the closest state as possible
+          if obj.is_a? Class
+            obj = klass.new
+            obj.update(hash,procs) rescue ''
+          end
+            klass.peh_error_occured(obj)
+          raise $!
+        end
+        result
       end
 
       private_class_method :process_error_proc
