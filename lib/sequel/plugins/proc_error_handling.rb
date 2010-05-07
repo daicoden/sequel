@@ -34,10 +34,6 @@ module Sequel
                 superclass.peh_error_occured(model)
               end
             end
-
-            def get_block
-              @error_block
-            end
           end
         end
       end
