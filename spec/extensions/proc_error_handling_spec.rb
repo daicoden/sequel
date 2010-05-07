@@ -140,7 +140,97 @@ describe "Sequel::Plugins::ProcErrorHandling" do
     defined?(Sequel::Plugins::PEH::DatasetMethods).should eql("constant")
   end
 
+  describe "a proc error handler", :shared => true do
+    it "should return result of the error proc" do
+      define_one_record_dataset(@ds)
+
+      # Bad attrs because DB is returning a unique model
+      bad_attrs = valid_attributes.merge :unique => 'unique0'
+      args = [ bad_attrs.dup, *@peh_args ]
+      lambda{ @peh_base.send(@peh_method, *args) }.should(
+        raise_error Sequel::ValidationFailed
+      )
+      args = [ bad_attrs.dup, *@peh_args ]
+      @peh_base.send(@peh_method,*args,false_on_error).should be false
+    end
+
+    it "should pass error if error not handled" do
+      define_virgin_dataset(@ds)
+
+      bad_attrs = valid_attributes.delete_if { |k,v| k == :required }
+      args = [ bad_attrs.dup, *@peh_args ]
+      lambda{ @peh_base.send(@peh_method, *args,unique_handle) }.should(
+        raise_error Sequel::ValidationFailed
+      )
+    end
+
+    it "should retry DB transaction if specified by block" do
+      define_virgin_dataset(@ds)
+      
+      bad_attrs = valid_attributes.delete_if { |k,v| k == :required }
+      args = [ bad_attrs.dup, *@peh_args ]
+      lambda{ @peh_base.send(@peh_method, *args) }.should(
+        raise_error Sequel::ValidationFailed
+      )
+
+      args = [ bad_attrs.dup, *@peh_args ]
+      @peh_base.send(@peh_method, *args,required_handle).
+        should be_an_instance_of @c
+    end
+
+    it "should take an array of error procs to handle multiple items" do
+      define_one_record_dataset(@ds)
+
+      bad_attrs = valid_attributes.merge(:unique => 'unique0').
+        delete_if { |k,v| k == :required }
+
+      args = [ bad_attrs.dup, *@peh_args ]
+      lambda{ @peh_base.send(@peh_method, *args) }.
+        should raise_error(Sequel::ValidationFailed)
+     
+      args = [ bad_attrs.dup, *@peh_args ]
+      lambda{ @peh_base.send(@peh_method, *args,unique_handle) }.
+        should raise_error(Sequel::ValidationFailed)
+      
+      args = [ bad_attrs.dup, *@peh_args ]
+      lambda{ @peh_base.send(@peh_method, *args,required_handle) }.
+        should raise_error(Sequel::ValidationFailed)
+
+      args = [ bad_attrs.dup, *@peh_args ]
+      @peh_base.send(@peh_method, *args,[unique_handle,required_handle]).
+        should be_an_instance_of(@c)
+    end
+
+    it "should raise an error regardless of other handlers if :raise " <<
+       "returned in a block" do
+      define_virgin_dataset(@ds)
+      bad_attrs = valid_attributes
+      bad_attrs[:required] = nil
+      base1 = (@peh_base == @c) ? @c : @peh_base.dup
+      base2 = (@peh_base == @c) ? @c : @peh_base.dup
+      base3 = (@peh_base == @c) ? @c : @peh_base.dup
+         
+      args = [ bad_attrs.dup, *@peh_args ]
+      base1.send(@peh_method, *args,required_handle).
+        should be_an_instance_of(@c)
+
+      args = [ bad_attrs.dup, *@peh_args ]
+      base2.send(@peh_method, *args,[required_handle, proc{:raise}]).
+        should be_an_instance_of(@c)
+
+      args = [ bad_attrs.dup, *@peh_args ]
+      lambda{base3.send(@peh_method, *args, [proc{:raise},required_handle])}.
+        should raise_error Sequel::ValidationFailed
+    end
+
+  end
+
   describe "(#create)" do
+    before(:each) do
+      @peh_base   = @c
+      @peh_method = :create
+      @peh_args   = []
+    end
 
     it "should function normaly with no error handling" do
       # Inserting a new record in virgin tabel
@@ -156,7 +246,9 @@ describe "Sequel::Plugins::ProcErrorHandling" do
 
       # Unique Failure
       bad_attrs = attrs.dup
-      lambda{ @c.create(bad_attrs.dup) }.should raise_error Sequel::ValidationFailed
+      lambda{ @c.create(bad_attrs.dup) }.should(
+        raise_error(Sequel::ValidationFailed)
+      )
       attrs = valid_attributes
       @c.create(attrs).should be_an_instance_of(@c)
       @db.sqls.last.should eql INSERT_VALID_ATTRS1
@@ -164,70 +256,54 @@ describe "Sequel::Plugins::ProcErrorHandling" do
 
       #Required Failure
       bad_attrs = valid_attributes.delete_if { |k,v| k == :required }
-      lambda{ @c.create(bad_attrs.dup) }.should raise_error Sequel::ValidationFailed
+      lambda{@c.create(bad_attrs.dup)}.should raise_error Sequel::ValidationFailed
       @db.reset
 
       @c.create(bad_attrs.dup) { |m| m.required = 'required' }
       @db.sqls.last.should eql INSERT_VALID_ATTRS1
     end
 
-    it "should return result of the error proc" do
-      define_one_record_dataset(@ds)
+    it_should_behave_like "a proc error handler"
 
-      # Bad attrs because DB is returning a unique model
-      bad_attrs = valid_attributes.merge :unique => 'unique0'
-      lambda{ @c.create(bad_attrs.dup) }.should raise_error Sequel::ValidationFailed
-      @c.create(bad_attrs.dup,false_on_error).should be false
+  end
+
+  describe "(#update)" do
+    before(:each) do
+      @peh_base = @c.new
+      @peh_method = :update 
+      @peh_args   = []
     end
 
-    it "should pass error if error not handled" do
-      define_virgin_dataset(@ds)
+    it_should_behave_like "a proc error handler"
+  end
 
-      bad_attrs = valid_attributes.delete_if { |k,v| k == :required }
-      lambda{ @c.create(bad_attrs.dup,unique_handle) }.should(
-        raise_error(Sequel::ValidationFailed)
-      )
+  describe "(#update_all)" do
+    before(:each) do 
+      @peh_base   = @c.new
+      @peh_method = :update_all
+      @peh_args   = []
     end
 
-    it "should retry DB transaction if specified by block" do
-      define_virgin_dataset(@ds)
-      
-      bad_attrs = valid_attributes.delete_if { |k,v| k == :required }
-      lambda{ @c.create(bad_attrs.dup) }.should raise_error Sequel::ValidationFailed
-      @c.create(bad_attrs.dup,required_handle).should be_an_instance_of(@c)
-      @db.sqls.last.should eql INSERT_VALID_ATTRS0
-    end
+    it_should_behave_like "a proc error handler"
+  end
 
-    it "should take an array of error procs to handle multiple items" do
-      define_one_record_dataset(@ds)
+  describe "(#update_except)" do
+    before(:each) do 
+      @peh_base   = @c.new 
+      @peh_method = :update_except
+      @peh_args   =  [:a_column]
+    end 
 
-      bad_attrs = valid_attributes.merge(:unique => 'unique0').
-        delete_if { |k,v| k == :required }
+    it_should_behave_like "a proc error handler"
+  end
 
-      lambda{ @c.create(bad_attrs.dup) }.should(
-        raise_error(Sequel::ValidationFailed)
-      )
-      lambda{ @c.create(bad_attrs.dup,unique_handle) }.should(
-        raise_error(Sequel::ValidationFailed)
-      )
-      lambda{ @c.create(bad_attrs.dup,required_handle) }.should(
-        raise_error(Sequel::ValidationFailed)
-      )
+  describe "(#update_except)" do
+    before(:each) do 
+      @peh_base   = @c.new 
+      @peh_method = :update_only
+      @peh_args   =  [:value, :required, :unique]
+    end 
 
-      @c.create(bad_attrs.dup,[unique_handle,required_handle])
-    end
-
-    it "should raise an error regardless of other handlers if :raise " <<
-       "returned in a block" do
-      define_virgin_dataset(@ds)
-      bad_attrs = valid_attributes.delete_if { |k,v| k == :required }
-         
-      @c.create(bad_attrs.dup,required_handle)
-      @c.create(bad_attrs.dup,[required_handle, proc{:raise}])
-
-      lambda{@c.create(bad_attrs.dup,[proc{:raise},required_handle])}.should(
-        raise_error(Sequel::ValidationFailed)
-      )
-    end
+    it_should_behave_like "a proc error handler"
   end
 end
