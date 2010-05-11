@@ -19,6 +19,7 @@ module Sequel
           alias peh_orig_update_all    update_all
           alias peh_orig_update_except update_except
           alias peh_orig_update_only   update_only
+          alias peh_orig_initialize    initialize
 
           class << self
             alias peh_orig_create create
@@ -42,7 +43,7 @@ module Sequel
       end
       
       module InstanceMethods
-        def update(hash,error_proc = nil)
+        def update(hash,*error_proc)
           peh_orig_update(hash)
         rescue
           result = PEH.send(:process_error_proc,error_proc,self,hash)
@@ -50,7 +51,7 @@ module Sequel
           result
         end
 
-        def update_all(hash, error_proc = nil)
+        def update_all(hash, *error_proc)
           peh_orig_update_all(hash)
          rescue
           result = PEH.send(:process_error_proc,error_proc,self,hash)
@@ -59,22 +60,43 @@ module Sequel
         end
 
         def update_except(hash, *except)
-          error_proc = nil unless defined? error_proc
-          *except, error_proc = *except if except.last.is_a? Proc or 
-            except.last.is_a? Array
+          error_procs = []
+          error_procs << except.pop while except.last.is_a? Proc
+          error_procs.reverse!
 
-          peh_orig_update_except(hash,*except)
-        rescue
-          result = PEH.send(:process_error_proc,error_proc,self,hash)
-          retry if result == :retry
-          result
+          # Only want to retry the update, don't want to clear error_procs
+          begin
+            peh_orig_update_except(hash,*except)
+          rescue
+            result = PEH.send(:process_error_proc,error_procs,self,hash)
+            retry if result == :retry
+            result
+          end
         end
 
         def update_only(hash, *only)
-          error_proc = nil unless defined? error_proc
-          *only, error_proc = *only if only.last.is_a? Proc or 
-            only.last.is_a? Array
-          peh_orig_update_only(hash,*only)
+          error_procs = []
+          error_procs << only.pop while only.last.is_a? Proc
+          error_procs.reverse!
+
+          begin
+            peh_orig_update_only(hash,*only)
+          rescue
+            result = PEH.send(:process_error_proc,error_procs,self,hash)
+            retry if result == :retry
+            result
+          end
+        end
+
+        def initialize(values = {}, *args,&block)
+          error_procs = []
+          error_procs << args.pop while args.last.is_a? Proc
+          error_procs.reverse!
+          from_db = args.pop || false # First value will be nil or boolean
+          raise ArgumentError, 
+            "Invalid Arguments passed to #new #{args}" unless args.empty?
+
+          peh_orig_initialize(values,from_db,&block)
         rescue
           result = PEH.send(:process_error_proc,error_proc,self,hash)
           retry if result == :retry
@@ -84,7 +106,7 @@ module Sequel
       end
 
       module ClassMethods
-        def create(values = {}, error_proc = nil, &block)
+        def create(values = {}, *error_proc, &block)
           # Because we need to catch where the error occured we need
           # to split this up into 3 parts.
           # in the future we could just modify initialize to take
@@ -131,6 +153,10 @@ module Sequel
         if result == :raise or result.nil?
           klass.peh_error_occured(obj)
           raise $!
+        end
+        if result != nil and result != :retry and result.class != obj.class
+          raise Sequel::Error, "An error handling proc must return either " <<
+          "nil, :raise, :retry, or an instance of the klass it is rescuing."
         end
         result
       end
