@@ -1,6 +1,23 @@
 module Sequel
   module Plugins
-    
+    # Proc Error Handling is a plugin to help handle validation errors
+    # by providing context specific error handling as proc objects.
+    #
+    # example:
+    #
+    #   filter_restricted = proc do |klass, values|
+    #     if $!.message =~ /doesn't exist or access is restricted to it/
+    #       values.delete_if { |k,v| klass.restricted_columns.include? k }
+    #       :retry
+    #     end
+    #   end
+    #       
+    #   Foo.new(:restricted_column => 'value') # raises error
+    #   Foo.new(:restricted_column => 'value', filter_restricted) # No Error
+    #
+    # This plugin is helpful when you don't want to be changing a model's
+    # error settings to acomodate unverified data in one area of the code,
+    # but still want the strict errors in a more secure area of the code.
     module ProcErrorHandling
       def self.apply(model)
         model.class_eval do
@@ -15,12 +32,12 @@ module Sequel
             alias peh_orig_create create
 
             def on_error(&block)
-              @error_block = block
+              @peh_error_block = block
             end
 
             def peh_error_occured(model)
-              if @error_block
-                @error_block.call(model)
+              if @peh_error_block
+                @peh_error_block.call(model)
               elsif superclass.respond_to? :peh_error_occured
                 superclass.peh_error_occured(model)
               end
