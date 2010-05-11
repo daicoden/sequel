@@ -9,10 +9,11 @@ describe "Sequel::Plugins::ProcErrorHandling" do
     def db.schema(table,opts={})
       { 
         foos: [
-          [ :id,       type: :integer, primary_key: true ],
-          [ :value,    type: :string                     ],
-          [ :unique,   type: :string                     ],
-          [ :required, type: :string                     ]
+          [ :id,         type: :integer, primary_key: true ],
+          [ :value,      type: :string                     ],
+          [ :unique,     type: :string                     ],
+          [ :required,   type: :string                     ],
+          [ :restricted, type: :string                     ]
         ] 
       }[table]
     end
@@ -28,10 +29,11 @@ describe "Sequel::Plugins::ProcErrorHandling" do
     end
 
     class ::Foo < Sequel::Model(db)
+      set_restricted_columns :restricted
       def validate
         errors.add(:required, "is required.")  unless required
         errors.add(:unique, "must be unique.") if 
-          self.class.first("unique = ?",unique)
+          m = self.class.first("unique = ?",unique) and m.id != self.id
       end
     end
     @c = ::Foo
@@ -384,6 +386,27 @@ describe "Sequel::Plugins::ProcErrorHandling" do
   end
 
   describe "(#new)" do
+    it "should recover when a proc is supplied" do
+      define_virgin_dataset(@ds)
+      bad_params = valid_attributes.merge :restricted => 'restricted' 
+      lambda{@c.new(bad_params.dup)}.should raise_error
+      
+      @c.new(bad_params.dup,proc { |a,b| b.delete(:restricted); :retry }).
+        should be_an_instance_of(@c)
+    end
+
+    it "should load a copy of itself from the db if object is returned by proc" do
+      define_one_record_dataset(@ds)
+      bad_params = valid_attributes.merge :restricted => 'restricted'
+      lambda{@c.new(bad_params.dup)}.should raise_error
+
+      m = @c.new(bad_params.dup,proc { |a,b| a.first("unique = ?",'unique0') })
+      m.should be_an_instance_of(@c)
+      m.should_not be_new
+      m.unique.should eql('unique0')
+      m.required.should eql('required')
+      m.should be_valid
+    end
   end
 
   describe "(#save)" do
@@ -392,6 +415,120 @@ describe "Sequel::Plugins::ProcErrorHandling" do
       @peh_methd = :save
     end
 
-#    it_should_behave_like "a proc error handler"
+    it "should error unless result is :retry, nil, or instance of klass" do
+      define_one_record_dataset(@ds)
+
+      # Bad attrs because DB is returning a unique model
+      bad_attrs = valid_attributes.merge :unique => 'unique0'
+      m = @c.new(bad_attrs.dup)
+      lambda{ m.save }.
+        should raise_error Sequel::ValidationFailed
+      lambda { m.save(false_on_error) }.
+        should raise_error Sequel::Error
+    end
+
+    it "should pass error if error not handled" do
+      define_virgin_dataset(@ds)
+
+      bad_attrs = valid_attributes.delete_if { |k,v| k == :required }
+      m = @c.new(bad_attrs)
+      lambda{m.save(unique_handle) }.
+        should raise_error Sequel::ValidationFailed
+    end
+
+    it "should retry DB transaction if specified by block" do
+      define_virgin_dataset(@ds)
+      
+      bad_attrs = valid_attributes.delete_if { |k,v| k == :required }
+      m = @c.new(bad_attrs.dup)
+      lambda{ m.save }.
+        should raise_error Sequel::ValidationFailed
+
+      m.save(required_handle).
+        should be_an_instance_of @c
+    end
+
+    it "should take an array of error procs to handle multiple items" do
+      define_one_record_dataset(@ds)
+
+      bad_attrs = valid_attributes.merge(:unique => 'unique0').
+        delete_if { |k,v| k == :required }
+
+      m = @c.new(bad_attrs.dup)
+      lambda{ m.save }.
+        should raise_error(Sequel::ValidationFailed)
+     
+      m = @c.new(bad_attrs.dup)
+      lambda{ m.save unique_handle }.
+        should raise_error(Sequel::ValidationFailed)
+      
+      m = @c.new(bad_attrs.dup)
+      lambda{ m.save required_handle }.
+        should raise_error(Sequel::ValidationFailed)
+
+      m = @c.new(bad_attrs.dup)
+      m.save(unique_handle,required_handle).
+        should be_an_instance_of(@c)
+    end
+
+    it "should raise an error regardless of other handlers if :raise " <<
+       "returned in a block" do
+      define_virgin_dataset(@ds)
+      bad_attrs = valid_attributes
+      bad_attrs[:required] = nil
+         
+      m = @c.new(bad_attrs.dup)
+      m.save(required_handle).
+        should be_an_instance_of(@c)
+
+      m = @c.new(bad_attrs.dup)
+      m.save(required_handle, proc{:raise}).
+        should be_an_instance_of(@c)
+
+      m = @c.new(bad_attrs.dup)
+      lambda{m.save(proc{:raise},required_handle)}.
+        should raise_error Sequel::ValidationFailed
+    end
+
+    it "should execute specified block on error" do
+      error_model = nil
+      @c.on_error{ |m| @error_model = m}
+
+      define_one_record_dataset(@ds)
+      bad_attrs = valid_attributes.merge :unique => 'unique0'
+
+      m = @c.new(bad_attrs.dup)
+      lambda{
+        m.save
+      }.should raise_error Sequel::ValidationFailed
+
+      @error_model.should be_an_instance_of(@c)
+    end
+
+    it "should run the error block of a superclass if no block given" do
+      begin
+        class ::Bar < Foo
+          def validate
+            errors.add(:unique, "must be unique.") if 
+              self.class.first("unique = ?",unique)
+          end
+        end
+        Bar.plugin :proc_error_handling
+
+        Foo.on_error{ |m| @error_model = m}
+
+        define_one_record_dataset(@ds)
+        bad_attrs = valid_attributes.merge :unique => 'unique0'
+
+        m = Bar.new bad_attrs.dup
+
+        lambda{ m.save }.
+          should raise_error Sequel::ValidationFailed
+
+        @error_model.should be_an_instance_of(Bar)
+      ensure
+        Object.send(:remove_const, :Bar)
+      end
+    end
   end
 end

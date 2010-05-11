@@ -1,17 +1,6 @@
 module Sequel
   module Plugins
-    # Methodologies
-    #
-    # Practically it is best if you return a modified model.
-    # If you want to return false or some other variable then you
-    # will have to put in checks in the control code.  The whole
-    # point of the proc error handling is to provide correction code
-    # to allow the control code to function normaly.  Anything else
-    # and the code should enter the exceptional code.
-    #
-    # #new is enforced this way since it can only return an instance
-    # of itself.  In the future #create, #update, #set may be modified
-    # so that only a model, :retry, :raise, or nil may be returned
+    
     module ProcErrorHandling
       def self.apply(model)
         model.class_eval do
@@ -20,6 +9,7 @@ module Sequel
           alias peh_orig_update_except update_except
           alias peh_orig_update_only   update_only
           alias peh_orig_initialize    initialize
+          alias peh_orig_save          save
 
           class << self
             alias peh_orig_create create
@@ -61,8 +51,7 @@ module Sequel
 
         def update_except(hash, *except)
           error_procs = []
-          error_procs << except.pop while except.last.is_a? Proc
-          error_procs.reverse!
+          error_procs.unshift except.pop while except.last.is_a? Proc
 
           # Only want to retry the update, don't want to clear error_procs
           begin
@@ -76,8 +65,7 @@ module Sequel
 
         def update_only(hash, *only)
           error_procs = []
-          error_procs << only.pop while only.last.is_a? Proc
-          error_procs.reverse!
+          error_procs.unshift only.pop while only.last.is_a? Proc
 
           begin
             peh_orig_update_only(hash,*only)
@@ -89,48 +77,49 @@ module Sequel
         end
 
         def initialize(values = {}, *args,&block)
+          orig = args.dup
           error_procs = []
-          error_procs << args.pop while args.last.is_a? Proc
-          error_procs.reverse!
+          error_procs.unshift args.pop while args.last.is_a? Proc
           from_db = args.pop || false # First value will be nil or boolean
           raise ArgumentError, 
-            "Invalid Arguments passed to #new #{args}" unless args.empty?
+            "Invalid Arguments passed to #new #{orig.inpsect}" unless args.empty?
 
-          peh_orig_initialize(values,from_db,&block)
-        rescue
-          result = PEH.send(:process_error_proc,error_proc,self,hash)
-          retry if result == :retry
-          result
+          begin
+            peh_orig_initialize(values,from_db,&block)
+          rescue
+            result = PEH.send(:process_error_proc,error_procs,self,values)
+            retry if result == :retry
+            # Special for new since we can't return anything else
+            if result.is_a? self.class
+              values  = result.values
+              from_db = true unless result.new?
+              retry
+            end
+            # Should not get here... means result was something other
+            # then :raise, :retry, nil, or an instance of self.class
+            raise "#new can not return any other object, there is" <<
+            " an error in your PEH proc"
+          end
+        end
+
+        def save(*columns)
+          error_procs = []
+          error_procs.unshift columns.pop while columns.last.is_a? Proc
+
+          begin
+            peh_orig_save(*columns)
+          rescue
+            result = PEH.send(:process_error_proc,error_procs,self,values)
+            retry if result == :retry
+            result
+          end
         end
 
       end
 
       module ClassMethods
         def create(values = {}, *error_proc, &block)
-          # Because we need to catch where the error occured we need
-          # to split this up into 3 parts.
-          # in the future we could just modify initialize to take
-          # error handling blocks and have that handel the errors instead
-          # of create.
-          #
-          # We can't do this now because initilize can not return
-          # anything else besides an instance of the object.  Create
-          # on the other hand is currently speced to return the result
-          # of the error proc.  I am leaning twoards not allowing this
-          # and saying you eithir have to return :raise, :retry, or nil
-          # This would enforce the methodology of providing error
-          # handling with the purpose of massaging the bad input
-          # into acceptable input
-          model = nil
-          model = new(values,&block)
-          model.save
-        rescue 
-          result = PEH.send(:process_error_proc, 
-                            error_proc, 
-                            model || self.new, 
-                            values)
-          retry if result == :retry
-          result
+          new(values,*error_proc, &block).save *error_proc
         end
       end
 
@@ -138,7 +127,7 @@ module Sequel
       end
 
       def self.process_error_proc(procs,obj,hash)
-        klass = (obj.is_a? Class) ? obj : obj.class
+        klass = obj.class
         # if procs is nil then compact array and result will be nil
         # if procs is single proc wrap in array so code runs normaly
         # if procs is array execute each one till value returned
