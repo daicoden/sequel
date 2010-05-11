@@ -524,7 +524,7 @@ module Sequel
       private_class_method :class_attr_overridable, :class_attr_reader
 
       class_attr_reader :columns, :db, :primary_key, :db_schema
-      class_attr_overridable :raise_on_save_failure, :raise_on_typecast_failure, :require_modification, :strict_param_setting, :typecast_empty_string_to_nil, :typecast_on_assignment, :use_transactions
+      class_attr_overridable *BOOLEAN_SETTINGS
 
       # The hash of attribute values.  Keys are symbols with the names of the
       # underlying database columns.
@@ -855,8 +855,10 @@ module Sequel
         delete
       end
 
+      # Insert the record into the database, returning the primary key if
+      # the record should be refreshed from the database.
       def _insert
-        ds = model.dataset
+        ds = _insert_dataset
         if ds.respond_to?(:insert_select) and h = ds.insert_select(@values)
           @values = h
           nil
@@ -871,6 +873,12 @@ module Sequel
         end
       end
       
+      # The dataset to use when inserting a new object.   The same as the model's
+      # dataset by default.
+      def _insert_dataset
+        model.dataset
+      end
+  
       # Refresh using a particular dataset, used inside save to make sure the same server
       # is used for reading newly inserted values from the database
       def _refresh(dataset)
