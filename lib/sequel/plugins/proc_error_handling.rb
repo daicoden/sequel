@@ -20,30 +20,6 @@ module Sequel
     # but still want the strict errors in a more secure area of the code.
     module ProcErrorHandling
       def self.apply(model)
-        model.class_eval do
-          alias peh_orig_update        update
-          alias peh_orig_update_all    update_all
-          alias peh_orig_update_except update_except
-          alias peh_orig_update_only   update_only
-          alias peh_orig_initialize    initialize
-          alias peh_orig_save          save
-
-          class << self
-            alias peh_orig_create create
-
-            def on_error(&block)
-              @peh_error_block = block
-            end
-
-            def peh_error_occured(model)
-              if @peh_error_block
-                @peh_error_block.call(model)
-              elsif superclass.respond_to? :peh_error_occured
-                superclass.peh_error_occured(model)
-              end
-            end
-          end
-        end
       end
 
       def self.configure(model,&block)
@@ -51,7 +27,7 @@ module Sequel
       
       module InstanceMethods
         def update(hash,*error_proc)
-          peh_orig_update(hash)
+          super(hash)
         rescue
           result = PEH.send(:process_error_proc,error_proc,self,hash)
           retry if result == :retry
@@ -59,7 +35,7 @@ module Sequel
         end
 
         def update_all(hash, *error_proc)
-          peh_orig_update_all(hash)
+          super(hash)
          rescue
           result = PEH.send(:process_error_proc,error_proc,self,hash)
           retry if result == :retry
@@ -72,7 +48,7 @@ module Sequel
 
           # Only want to retry the update, don't want to clear error_procs
           begin
-            peh_orig_update_except(hash,*except)
+            super(hash,*except)
           rescue
             result = PEH.send(:process_error_proc,error_procs,self,hash)
             retry if result == :retry
@@ -85,7 +61,7 @@ module Sequel
           error_procs.unshift only.pop while only.last.is_a? Proc
 
           begin
-            peh_orig_update_only(hash,*only)
+            super(hash,*only)
           rescue
             result = PEH.send(:process_error_proc,error_procs,self,hash)
             retry if result == :retry
@@ -102,7 +78,7 @@ module Sequel
             "Invalid Arguments passed to #new #{orig.inpsect}" unless args.empty?
 
           begin
-            peh_orig_initialize(values,from_db,&block)
+            super(values,from_db,&block)
           rescue
             result = PEH.send(:process_error_proc,error_procs,self,values)
             retry if result == :retry
@@ -124,7 +100,7 @@ module Sequel
           error_procs.unshift columns.pop while columns.last.is_a? Proc
 
           begin
-            peh_orig_save(*columns)
+            super(*columns)
           rescue
             result = PEH.send(:process_error_proc,error_procs,self,values)
             retry if result == :retry
@@ -137,6 +113,18 @@ module Sequel
       module ClassMethods
         def create(values = {}, *error_proc, &block)
           new(values,*error_proc, &block).save *error_proc
+        end
+
+        def on_error(&block)
+          @peh_error_block = block
+        end
+
+        def peh_error_occured(model)
+          if @peh_error_block
+            @peh_error_block.call(model)
+          elsif superclass.respond_to? :peh_error_occured
+            superclass.peh_error_occured(model)
+          end
         end
       end
 
